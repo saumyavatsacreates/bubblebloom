@@ -209,9 +209,18 @@ html,body{width:100%;height:100%;background:var(--cream);font-family:'DM Mono',m
 
 /* ── Sound pills ── */
 #soundbar{position:fixed;bottom:64px;left:50%;transform:translateX(-50%);z-index:200;display:flex;gap:4px;flex-wrap:wrap;justify-content:center}
-.sp{background:rgba(28,26,24,.07);border:1px solid rgba(28,26,24,.12);border-radius:100px;padding:3px 9px;font-size:8px;letter-spacing:.1em;text-transform:uppercase;color:var(--stone);cursor:pointer;transition:all .18s;white-space:nowrap}
+.sp{background:rgba(28,26,24,.07);border:1px solid rgba(28,26,24,.12);border-radius:100px;padding:3px 9px;font-size:8px;letter-spacing:.1em;text-transform:uppercase;color:var(--stone);cursor:pointer;transition:all .18s;white-space:nowrap;display:flex;align-items:center;gap:4px}
 .sp:hover{background:rgba(28,26,24,.14);color:var(--ink)}
 .sp.on{background:var(--sage);color:#fff;border-color:var(--sage)}
+/* Animated bars indicator — only visible on active pill */
+.sp-bars{display:none;align-items:flex-end;gap:1.5px;height:8px}
+.sp.on .sp-bars{display:flex}
+.sp-bars span{display:block;width:2px;background:#fff;border-radius:1px;animation:spbar 1.1s ease-in-out infinite}
+.sp-bars span:nth-child(1){height:3px;animation-delay:0s}
+.sp-bars span:nth-child(2){height:6px;animation-delay:.18s}
+.sp-bars span:nth-child(3){height:4px;animation-delay:.34s}
+.sp-bars span:nth-child(4){height:7px;animation-delay:.52s}
+@keyframes spbar{0%,100%{transform:scaleY(.4)}50%{transform:scaleY(1)}}
 
 /* ── Breathe ── */
 #breathe{position:fixed;inset:0;z-index:500;pointer-events:none;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .65s ease}
@@ -306,11 +315,11 @@ html,body{width:100%;height:100%;background:var(--cream);font-family:'DM Mono',m
 
 <div id="imgbar"></div>
 <div id="soundbar">
-  <div class="sp on"  data-s="birds">🐦 Birds</div>
-  <div class="sp"     data-s="waves">🌊 Waves</div>
-  <div class="sp"     data-s="breeze">🍃 Breeze</div>
-  <div class="sp"     data-s="rain">🌧 Rain</div>
-  <div class="sp"     data-s="white">◎ White</div>
+  <div class="sp"  data-s="birds">🐦 Birds<span class="sp-bars"><span></span><span></span><span></span><span></span></span></div>
+  <div class="sp"     data-s="waves">🌊 Waves<span class="sp-bars"><span></span><span></span><span></span><span></span></span></div>
+  <div class="sp"     data-s="breeze">🍃 Breeze<span class="sp-bars"><span></span><span></span><span></span><span></span></span></div>
+  <div class="sp"     data-s="rain">🌧 Rain<span class="sp-bars"><span></span><span></span><span></span><span></span></span></div>
+  <div class="sp"     data-s="white">◎ White<span class="sp-bars"><span></span><span></span><span></span><span></span></span></div>
 </div>
 <div id="progbar">
   <svg id="progring" width="26" height="26" viewBox="0 0 26 26">
@@ -345,8 +354,8 @@ const S = {
   muted:false, breathe:false, haptic:true,
   popped:0, total:COLS*ROWS, active:false,
   popsBreath:0, peelReady:false, peeled:false,
-  ac:null, masterG:null, ambG:null, ambNodes:[], birdsActive:false,
-  ambType:'birds', puzzleIdx:0, snap:null,
+  ac:null, masterG:null, ambG:null, ambNodes:[], birdsActive:false, iosUnlocked:false,
+  ambType:null, puzzleIdx:0, snap:null,
 };
 
 const $  = id => document.getElementById(id);
@@ -365,16 +374,20 @@ const coverCtx = $cc.getContext('2d');
 // ── layout ──────────────────────────────────────────────────
 function layout() {
   const vw = innerWidth, vh = innerHeight;
-  // Account for header (48px) + bottom bars (~96px) + padding (24px)
   const maxW = Math.min(vw - 24, 580);
   const maxH = vh - 48 - 96 - 24;
   CS = Math.max(52, Math.min(110, Math.floor(Math.min(maxW/COLS, maxH/ROWS))));
   GW = CS*COLS; GH = CS*ROWS;
-  $w.style.cssText    = `width:${GW}px;height:${GH}px`;
-  $ac.width = GW; $ac.height = GH; $ac.style.cssText = `width:${GW}px;height:${GH}px`;
-  $cc.width = GW; $cc.height = GH; $cc.style.cssText = `width:${GW}px;height:${GH}px`;
-  $bw.style.cssText   = `width:${GW}px;height:${GH}px`;
-  $pl.style.cssText   = `width:${GW}px;height:${GH}px`;
+  // Use individual style properties so we don't wipe CSS-class rules (e.g. overflow:hidden on #bwrap)
+  const setSize = (el, w, h) => {
+    el.style.width  = w + 'px';
+    el.style.height = h + 'px';
+  };
+  setSize($w,  GW, GH);
+  setSize($bw, GW, GH);
+  setSize($pl, GW, GH);
+  $ac.width  = GW; $ac.height  = GH; setSize($ac, GW, GH);
+  $cc.width  = GW; $cc.height  = GH; setSize($cc, GW, GH);
 }
 
 // ════════════════════════════════════════════════════════════
@@ -454,12 +467,15 @@ function buildGrid() {
 // ════════════════════════════════════════════════════════════
 //  POP
 // ════════════════════════════════════════════════════════════
-function pop(cell) {
+async function pop(cell) {
   if (!S.active || cell.classList.contains('popped')) return;
   const dome = cell.querySelector('.bdome');
   if (!dome || dome.classList.contains('popping')) return;
 
-  ensureAudio();
+  await ensureAudio();
+  if (!S.ambG.gain.value && S.popped === 0) {
+    startAmb(S.ambType); // start soundscape on first pop if not already running
+  }
   playPop(0.78 + Math.random() * .44);
   if (S.haptic && navigator.vibrate) navigator.vibrate(8);
 
@@ -526,10 +542,10 @@ function allPopped() {
 // ════════════════════════════════════════════════════════════
 //  PEEL
 // ════════════════════════════════════════════════════════════
-function doPeel() {
+async function doPeel() {
   if (S.peeled) return;
   S.peeled = true;
-  ensureAudio();
+  await ensureAudio();
   $pc.classList.remove('show');
   playPeel();
   if (S.haptic && navigator.vibrate) navigator.vibrate([18,10,14,7,11,5,9,4,7,3]);
@@ -555,7 +571,10 @@ function updateProg() {
   $pt.textContent = p===0 ? 'tap to pop' : p>=1 ? 'now peel it!' : p>.72 ? 'almost…' : 'revealing';
 }
 function updateAmb() {
-  if (S.ambG) S.ambG.gain.setTargetAtTime((S.popped/S.total)*.15, S.ac.currentTime, .55);
+  if (S.ambG && S.ac && S.ambType) {
+    const gain = 0.12 + (S.popped/S.total) * 0.16;
+    S.ambG.gain.setTargetAtTime(gain, S.ac.currentTime, .55);
+  }
 }
 
 // ════════════════════════════════════════════════════════════
@@ -572,44 +591,71 @@ function showBreathe() {
 // ════════════════════════════════════════════════════════════
 const rnd = (a,b) => a + Math.random()*(b-a);
 
-function ensureAudio() {
-  if (S.ac) {
-    // iOS suspends AudioContext on page hide/show — always try to resume
-    if (S.ac.state === 'suspended') S.ac.resume();
-    return;
+async function ensureAudio() {
+  if (!S.ac) {
+    const ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+    S.ac = ac;
+
+    S.masterG = ac.createGain();
+    S.masterG.gain.value = S.muted ? 0 : 1;
+    S.masterG.connect(ac.destination);
+
+    S.ambG = ac.createGain();
+    S.ambG.gain.value = 0;
+    S.ambG.connect(S.masterG);
   }
-  const ac = new (window.AudioContext || window.webkitAudioContext)();
-  S.ac = ac;
 
-  // iOS UNLOCK: play a silent stereo buffer immediately inside the gesture
-  // Without this, subsequent programmatic audio often stays silent on iPhone
-  const unlock = ac.createBuffer(2, ac.sampleRate * 0.001, ac.sampleRate);
-  const us = ac.createBufferSource();
-  us.buffer = unlock;
-  us.connect(ac.destination);
-  us.start(0);
-  us.stop(0.001);
+  const ac = S.ac;
 
-  // Resume in case iOS auto-suspended on creation
-  if (ac.state === 'suspended') ac.resume();
+  if (ac.state !== 'running') {
+    try { await ac.resume(); } catch(e) {}
+  }
 
-  S.masterG = ac.createGain();
-  S.masterG.gain.value = S.muted ? 0 : 1;
-  S.masterG.connect(ac.destination);
+  if (!S.iosUnlocked && ac.state === 'running') {
+    S.iosUnlocked = true;
 
-  S.ambG = ac.createGain();
-  S.ambG.gain.value = 0;
-  S.ambG.connect(S.masterG);
+    // iOS requires a real buffer played synchronously after resume to unlock
+    const buf = ac.createBuffer(1, ac.sampleRate * 0.1, ac.sampleRate);
+    // Fill with very quiet noise — iOS ignores truly silent buffers
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * 0.0001;
+    const src = ac.createBufferSource();
+    src.buffer = buf;
+    src.connect(ac.destination);
+    src.start(0);
 
-  startAmb(S.ambType);
+    // Keep-alive: a silent oscillator running continuously.
+    // iOS Safari suspends AudioContext when it detects "silence" for >30s.
+    // This prevents that — it's inaudible (gain 0.00001) but keeps the graph active.
+    const keepAlive = ac.createOscillator();
+    const keepG = ac.createGain();
+    keepG.gain.value = 0.00001;
+    keepAlive.connect(keepG);
+    keepG.connect(ac.destination);
+    keepAlive.start();
+    S._keepAlive = keepAlive; // store reference
+  }
 }
 
-// Re-unlock on any visibility change (iOS kills audio when app backgrounds)
-document.addEventListener('visibilitychange', () => {
-  if (S.ac && S.ac.state === 'suspended') S.ac.resume();
+// Re-unlock on visibility change and focus (iOS suspends on background)
+document.addEventListener('visibilitychange', async () => {
+  if (!S.ac) return;
+  if (S.ac.state !== 'running') {
+    try { await S.ac.resume(); } catch(e) {}
+  }
 });
-window.addEventListener('focus', () => {
-  if (S.ac && S.ac.state === 'suspended') S.ac.resume();
+window.addEventListener('focus', async () => {
+  if (!S.ac) return;
+  if (S.ac.state !== 'running') {
+    try { await S.ac.resume(); } catch(e) {}
+  }
+});
+// pageshow fires on back-navigation cache restore (bfcache) — critical for iOS
+window.addEventListener('pageshow', async (e) => {
+  if (!S.ac) return;
+  if (S.ac.state !== 'running') {
+    try { await S.ac.resume(); } catch(e) {}
+  }
 });
 
 function stopAmb() {
@@ -620,101 +666,116 @@ function stopAmb() {
 
 function startAmb(type) {
   stopAmb(); S.ambType = type;
-  if (!S.ac) return;
+  if (!type || !S.ac) return;
   const ac = S.ac;
-  // iOS may have suspended between interactions
-  if (ac.state === 'suspended') ac.resume();
+  if (ac.state !== 'running') return;
+  if (S.ambG.gain.value < 0.08) S.ambG.gain.value = 0.12 + (S.popped / S.total) * 0.16;
 
   if (type === 'birds') {
-    // Soft gentle ambient bed — quiet filtered noise like a warm morning
+    // Ambient morning-air noise bed
     const buf0 = noise(ac, 6);
     const src0 = ac.createBufferSource(); src0.buffer = buf0; src0.loop = true;
-    const lp0 = ac.createBiquadFilter(); lp0.type = 'lowpass'; lp0.frequency.value = 600;
-    const g0 = ac.createGain(); g0.gain.value = 0.04;
-    src0.connect(lp0); lp0.connect(g0); g0.connect(S.ambG); src0.start(); S.ambNodes.push(src0);
+    const lp0 = ac.createBiquadFilter(); lp0.type = 'lowpass'; lp0.frequency.value = 500;
+    const g0 = ac.createGain(); g0.gain.value = 0.18;
+    src0.connect(lp0); lp0.connect(g0); g0.connect(S.masterG);
+    src0.start(); S.ambNodes.push(src0);
 
-    // Helper: play one gentle chirp or coo
+    // Bird call helper — connects direct to masterG so it's always audible
     function birdCall(type2) {
-      if (!S.ac) return;
-      const a2 = S.ac;
-      const t2 = a2.currentTime;
-      const o = a2.createOscillator();
-      const g2 = a2.createGain();
-      // Low-pass so it sounds round and soft, not electronic
-      const lp2 = a2.createBiquadFilter(); lp2.type = 'lowpass'; lp2.frequency.value = 2800; lp2.Q.value = 0.7;
+      if (!S.ac || !S.birdsActive) return;
+      const a2 = S.ac, t2 = a2.currentTime;
 
       if (type2 === 'coo') {
-        // Dove-like coo: low, gentle, descending
+        const o = a2.createOscillator(), g2 = a2.createGain();
+        const lp2 = a2.createBiquadFilter(); lp2.type='lowpass'; lp2.frequency.value=1800;
         o.type = 'sine';
         const f0 = rnd(480, 560);
         o.frequency.setValueAtTime(f0, t2);
-        o.frequency.linearRampToValueAtTime(f0 * 0.88, t2 + 0.18);
-        o.frequency.setValueAtTime(f0 * 0.88, t2 + 0.28);
-        o.frequency.linearRampToValueAtTime(f0 * 0.92, t2 + 0.5);
+        o.frequency.linearRampToValueAtTime(f0 * 0.86, t2 + 0.22);
+        o.frequency.linearRampToValueAtTime(f0 * 0.91, t2 + 0.52);
         g2.gain.setValueAtTime(0, t2);
-        g2.gain.linearRampToValueAtTime(0.09, t2 + 0.04);
-        g2.gain.setValueAtTime(0.09, t2 + 0.44);
-        g2.gain.linearRampToValueAtTime(0, t2 + 0.58);
-        o.connect(lp2); lp2.connect(g2); g2.connect(S.ambG);
-        o.start(t2); o.stop(t2 + 0.65);
+        g2.gain.linearRampToValueAtTime(0.28, t2 + 0.05);
+        g2.gain.setValueAtTime(0.28, t2 + 0.42);
+        g2.gain.linearRampToValueAtTime(0, t2 + 0.62);
+        o.connect(lp2); lp2.connect(g2); g2.connect(S.masterG);
+        o.start(t2); o.stop(t2 + 0.68);
+
       } else if (type2 === 'chirp') {
-        // Short bright chirp: quick ascending note
+        const o = a2.createOscillator(), g2 = a2.createGain();
+        const lp2 = a2.createBiquadFilter(); lp2.type='lowpass'; lp2.frequency.value=3000;
         o.type = 'triangle';
-        const f1 = rnd(1100, 1600);
+        const f1 = rnd(1200, 1800);
         o.frequency.setValueAtTime(f1, t2);
-        o.frequency.linearRampToValueAtTime(f1 * rnd(1.12, 1.28), t2 + 0.06);
-        o.frequency.linearRampToValueAtTime(f1 * rnd(0.96, 1.04), t2 + 0.12);
+        o.frequency.linearRampToValueAtTime(f1 * rnd(1.15, 1.3), t2 + 0.07);
+        o.frequency.linearRampToValueAtTime(f1 * rnd(0.94, 1.02), t2 + 0.14);
         g2.gain.setValueAtTime(0, t2);
-        g2.gain.linearRampToValueAtTime(0.07, t2 + 0.01);
-        g2.gain.exponentialRampToValueAtTime(0.001, t2 + 0.18);
-        o.connect(lp2); lp2.connect(g2); g2.connect(S.ambG);
-        o.start(t2); o.stop(t2 + 0.22);
+        g2.gain.linearRampToValueAtTime(0.22, t2 + 0.01);
+        g2.gain.exponentialRampToValueAtTime(0.001, t2 + 0.2);
+        o.connect(lp2); lp2.connect(g2); g2.connect(S.masterG);
+        o.start(t2); o.stop(t2 + 0.24);
+
       } else {
-        // Double-chirp: the classic "twee-twee" sparrow pattern
-        o.type = 'sine';
-        const f2 = rnd(1800, 2400);
-        [0, 0.12].forEach(delay => {
-          const o2 = a2.createOscillator();
-          const g3 = a2.createGain();
-          const lp3 = a2.createBiquadFilter(); lp3.type = 'lowpass'; lp3.frequency.value = 3200;
+        // twee-twee double chirp
+        [0, 0.13].forEach(delay => {
+          const o2 = a2.createOscillator(), g3 = a2.createGain();
+          const lp3 = a2.createBiquadFilter(); lp3.type='lowpass'; lp3.frequency.value=3200;
           o2.type = 'triangle';
+          const f2 = rnd(1800, 2600);
           o2.frequency.setValueAtTime(f2, t2 + delay);
-          o2.frequency.linearRampToValueAtTime(f2 * 1.18, t2 + delay + 0.05);
+          o2.frequency.linearRampToValueAtTime(f2 * 1.2, t2 + delay + 0.06);
           g3.gain.setValueAtTime(0, t2 + delay);
-          g3.gain.linearRampToValueAtTime(0.065, t2 + delay + 0.01);
-          g3.gain.exponentialRampToValueAtTime(0.001, t2 + delay + 0.1);
-          o2.connect(lp3); lp3.connect(g3); g3.connect(S.ambG);
-          o2.start(t2 + delay); o2.stop(t2 + delay + 0.14);
+          g3.gain.linearRampToValueAtTime(0.18, t2 + delay + 0.01);
+          g3.gain.exponentialRampToValueAtTime(0.001, t2 + delay + 0.12);
+          o2.connect(lp3); lp3.connect(g3); g3.connect(S.masterG);
+          o2.start(t2 + delay); o2.stop(t2 + delay + 0.16);
         });
-        o.start(t2); o.stop(t2); // unused main osc, just for cleanup
       }
     }
 
-    // Schedule calls in random order — coos less frequent, chirps more
     const callTypes = ['coo','coo','chirp','chirp','double','chirp'];
     S.birdsActive = true;
     function scheduleCall() {
       if (!S.ac || !S.birdsActive) return;
-      const pick = callTypes[Math.floor(Math.random() * callTypes.length)];
-      birdCall(pick);
-      setTimeout(scheduleCall, rnd(900, 4200));
+      birdCall(callTypes[Math.floor(Math.random() * callTypes.length)]);
+      setTimeout(scheduleCall, rnd(900, 3800));
     }
-    // Stagger two independent "birds" so they don't always sync
-    setTimeout(scheduleCall, rnd(200, 800));
-    setTimeout(scheduleCall, rnd(1200, 2800));
+    scheduleCall(); // first call immediately
+    setTimeout(scheduleCall, rnd(700, 1600)); // second bird voice staggered
   }
   else if (type === 'waves') {
-    [[5.8,380,.22],[8.5,190,.18],[4.2,580,.14]].forEach(([period,freq,vol]) => {
-      const buf=noise(ac,6); const src=ac.createBufferSource(); src.buffer=buf; src.loop=true;
-      const lp=ac.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=freq; lp.Q.value=.5;
-      // Boost low-mids so waves feel physical on iPhone
-      const eq=ac.createBiquadFilter(); eq.type='peaking'; eq.frequency.value=200; eq.gain.value=6; eq.Q.value=1;
-      const lfo=ac.createOscillator(),lg=ac.createGain();
-      lfo.frequency.value=1/period; lg.gain.value=vol*.5;
-      const g=ac.createGain(); g.gain.value=vol*.5;
-      lfo.connect(lg); lg.connect(g.gain);
-      src.connect(lp); lp.connect(eq); eq.connect(g); g.connect(S.ambG);
-      src.start(); lfo.start(); S.ambNodes.push(src,lfo);
+    // Three noise layers — each shaped by a lowpass + gain envelope
+    // Gain automation creates the crash → wash → recede rhythm
+    // Connects to masterG directly so it's never muted by ambG=0
+    [[380, 0.32], [220, 0.26], [520, 0.20]].forEach(([lpFreq, vol], idx) => {
+      const buf = noise(ac, 8);
+      const src = ac.createBufferSource(); src.buffer = buf; src.loop = true;
+      const lp = ac.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=lpFreq; lp.Q.value=1.6;
+      const hp = ac.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=55;
+      const eq = ac.createBiquadFilter(); eq.type='peaking'; eq.frequency.value=280; eq.gain.value=9; eq.Q.value=0.9;
+      const g = ac.createGain(); g.gain.value = vol * 0.1; // audible from the start
+      src.connect(hp); hp.connect(lp); lp.connect(eq); eq.connect(g); g.connect(S.masterG);
+      src.start(); S.ambNodes.push(src);
+
+      // Track whether this layer is still alive
+      let waveActive = true;
+      S.ambNodes.push({ stop: () => { waveActive = false; } });
+
+      function runWave() {
+        if (!S.ac || !waveActive) return;
+        const t0 = S.ac.currentTime;
+        const crash = rnd(0.7, 1.2);
+        const wash  = rnd(1.0, 2.0);
+        const recede= rnd(2.2, 4.0);
+        const peak  = vol * rnd(0.9, 1.1);
+        g.gain.cancelScheduledValues(t0);
+        g.gain.setValueAtTime(g.gain.value, t0);
+        g.gain.linearRampToValueAtTime(peak, t0 + crash);
+        g.gain.setValueAtTime(peak, t0 + crash + wash);
+        g.gain.linearRampToValueAtTime(vol * 0.05, t0 + crash + wash + recede);
+        const total = crash + wash + recede + rnd(0.3, 1.2);
+        setTimeout(runWave, total * 1000 - 300);
+      }
+      setTimeout(runWave, idx * rnd(300, 900)); // stagger layers
     });
   }
   else if (type === 'breeze') {
@@ -772,99 +833,125 @@ function noise(ac, dur, channels=2) {
   return buf;
 }
 
-// Bubble-wrap pop: realistic plastic membrane burst
-// Layers: sharp transient crack → hollow air thump → mid-freq resonance → tail hiss
+// Bubble-wrap pop: authentic plastic membrane burst
+// Physics: membrane stretches → catastrophic fracture → air jet → plastic crinkle decay
 function playPop(pv=1) {
   if (!S.ac || S.muted) return;
+  if (S.ac.state !== 'running') return;
   const ac = S.ac;
-  // Always attempt resume — iOS may have suspended between pops
-  if (ac.state === 'suspended') ac.resume();
   const t = ac.currentTime;
+  const sr = ac.sampleRate;
 
-  // ── Layer 1: Sharp plastic CRACK (the membrane snapping) ──
-  // Longer than before (28ms) so iOS speakers don't lose it
-  const cLen = Math.ceil(ac.sampleRate * 0.028);
-  const cBuf = ac.createBuffer(2, cLen, ac.sampleRate);
+  // ── Layer 1: WIDEBAND CRUNCH TRANSIENT ──
+  // The dominant sound of bubble wrap — a dense, broadband noise burst
+  // covering 300Hz–8kHz simultaneously. NOT a narrow bandpass.
+  // Duration 55ms — long enough to feel physical, short enough to feel snappy.
+  const cLen = Math.ceil(sr * 0.055);
+  const cBuf = ac.createBuffer(2, cLen, sr);
   for (let ch = 0; ch < 2; ch++) {
     const d = cBuf.getChannelData(ch);
     for (let i = 0; i < cLen; i++) {
-      const env = Math.pow(1 - i/cLen, 3.5);
-      // Mix white noise with a slight pitch for crunch texture
-      d[i] = (Math.random()*2-1) * env * 0.9 +
-              Math.sin(2*Math.PI * 2400*pv * i/ac.sampleRate) * env * 0.1;
+      // Exponential decay — fast at start (the snap) slow at end (the crunch settling)
+      const env = Math.pow(1 - i/cLen, 2.2);
+      // Three noise components mixed: white (crunch), low (body), high (crackle)
+      const white = (Math.random()*2-1);
+      // Mid-frequency emphasis via sinusoidal modulation at ~900Hz
+      const mid = Math.sin(2*Math.PI * 900*pv * i/sr) * (Math.random()*2-1);
+      // High crackle at ~4kHz — the sharp plastic fracture sound
+      const hi  = Math.sin(2*Math.PI * 4000*pv * i/sr) * (Math.random()*2-1) * 0.3;
+      d[i] = (white * 0.5 + mid * 0.35 + hi * 0.15) * env;
     }
   }
   const cs = ac.createBufferSource(); cs.buffer = cBuf;
-  // Bandpass centred on the snappy crack frequency
-  const cbp = ac.createBiquadFilter(); cbp.type='bandpass'; cbp.frequency.value=1800*pv; cbp.Q.value=0.7;
-  // High shelf boost so iPhone speaker doesn't eat the crack
-  const chs = ac.createBiquadFilter(); chs.type='highshelf'; chs.frequency.value=2400; chs.gain.value=9;
+  // Wide bandpass — let everything through, just cut sub-bass and extreme highs
+  const chp = ac.createBiquadFilter(); chp.type='highpass'; chp.frequency.value=180;
+  const clp = ac.createBiquadFilter(); clp.type='lowpass';  clp.frequency.value=9000;
+  // Boost the 800–2000Hz "plastic crunch" zone
+  const ceq = ac.createBiquadFilter(); ceq.type='peaking'; ceq.frequency.value=1200*pv; ceq.gain.value=11; ceq.Q.value=0.8;
   const cg = ac.createGain();
-  cg.gain.setValueAtTime(0.85, t);
-  cg.gain.exponentialRampToValueAtTime(0.001, t + 0.032);
-  cs.connect(cbp); cbp.connect(chs); chs.connect(cg); cg.connect(S.masterG);
-  cs.start(t); cs.stop(t + 0.035);
+  cg.gain.setValueAtTime(1.1, t);
+  cg.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+  cs.connect(chp); chp.connect(clp); clp.connect(ceq); ceq.connect(cg); cg.connect(S.masterG);
+  cs.start(t); cs.stop(t + 0.065);
 
-  // ── Layer 2: Hollow AIR THUMP (trapped air releasing) ──
-  // Real bubble wrap has a satisfying low-mid body — boosted for iPhone
-  const aLen = Math.ceil(ac.sampleRate * 0.065);
-  const aBuf = ac.createBuffer(2, aLen, ac.sampleRate);
+  // ── Layer 2: AIR JET THUMP ──
+  // Compressed air bursting out — gives the satisfying "body" to the pop.
+  // Pitched at 120–200Hz depending on bubble size (pv variation).
+  const aLen = Math.ceil(sr * 0.07);
+  const aBuf = ac.createBuffer(2, aLen, sr);
   for (let ch = 0; ch < 2; ch++) {
     const d = aBuf.getChannelData(ch);
     for (let i = 0; i < aLen; i++) {
-      const env = Math.pow(1 - i/aLen, 1.8);
-      // Tonal thump at ~180Hz + noise for breath
-      d[i] = Math.sin(2*Math.PI * 180*pv * i/ac.sampleRate) * env * 0.55 +
-             (Math.random()*2-1) * env * 0.45;
+      const env = Math.pow(1 - i/aLen, 1.6);
+      // Tonal sine at the "thud" frequency + noise for turbulence
+      const tone  = Math.sin(2*Math.PI * 150*pv * i/sr) * 0.6;
+      const turb  = (Math.random()*2-1) * 0.4;
+      d[i] = (tone + turb) * env;
     }
   }
   const as2 = ac.createBufferSource(); as2.buffer = aBuf;
-  const alp = ac.createBiquadFilter(); alp.type='lowpass'; alp.frequency.value=420*pv; alp.Q.value=1.4;
-  // Slight low-mid boost so it punches through iPhone speaker
-  const aeq = ac.createBiquadFilter(); aeq.type='peaking'; aeq.frequency.value=280; aeq.gain.value=8; aeq.Q.value=1.2;
+  const alp = ac.createBiquadFilter(); alp.type='lowpass'; alp.frequency.value=500*pv; alp.Q.value=1.8;
+  const aeq = ac.createBiquadFilter(); aeq.type='peaking'; aeq.frequency.value=200*pv; aeq.gain.value=10; aeq.Q.value=1.0;
   const ag = ac.createGain();
-  ag.gain.setValueAtTime(0.72, t);
-  ag.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+  ag.gain.setValueAtTime(0.9, t);
+  ag.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
   as2.connect(alp); alp.connect(aeq); aeq.connect(ag); ag.connect(S.masterG);
-  as2.start(t); as2.stop(t + 0.075);
+  as2.start(t); as2.stop(t + 0.085);
 
-  // ── Layer 3: Mid RESONANCE (plastic membrane ringing) ──
-  // The subtle "ping" that makes each pop feel slightly different
-  const sn = ac.createOscillator();
-  const snf = ac.createBiquadFilter(); snf.type='bandpass'; snf.frequency.value=1100*pv; snf.Q.value=3;
-  const sg = ac.createGain();
-  sn.type = 'triangle';
-  sn.frequency.setValueAtTime(1100*pv, t);
-  sn.frequency.exponentialRampToValueAtTime(800*pv, t + 0.04);
-  sg.gain.setValueAtTime(0.18, t);
-  sg.gain.exponentialRampToValueAtTime(0.001, t + 0.055);
-  sn.connect(snf); snf.connect(sg); sg.connect(S.masterG);
-  sn.start(t); sn.stop(t + 0.06);
-
-  // ── Layer 4: Short TAIL HISS (air escaping through the puncture) ──
-  // Adds realism — the "shhh" after the pop
-  const hLen = Math.ceil(ac.sampleRate * 0.08);
-  const hBuf = ac.createBuffer(2, hLen, ac.sampleRate);
+  // ── Layer 3: PLASTIC ENMESH / CRINKLE DECAY ──
+  // The sound of the burst membrane crinkling and enmeshing with adjacent cells.
+  // This is the "texture" people mean when they say bubble wrap feels satisfying.
+  // Wideband noise with a slowly sweeping bandpass — sounds like plastic settling.
+  const mLen = Math.ceil(sr * 0.12);
+  const mBuf = ac.createBuffer(2, mLen, sr);
   for (let ch = 0; ch < 2; ch++) {
-    const d = hBuf.getChannelData(ch);
-    for (let i = 0; i < hLen; i++) {
-      const env = (i/hLen) < 0.15 ? 0 : Math.pow(1 - i/hLen, 1.2) * ((i/hLen - 0.15) / 0.85);
-      d[i] = (Math.random()*2-1) * env;
+    const d = mBuf.getChannelData(ch);
+    for (let i = 0; i < mLen; i++) {
+      // Delayed onset — crinkle starts AFTER the initial pop
+      const pos = i / mLen;
+      const env = pos < 0.12 ? pos/0.12 : Math.pow(1 - (pos-0.12)/0.88, 1.4);
+      // Irregular noise texture — not smooth, has micro-bursts like plastic folding
+      const burst = Math.random() > 0.92 ? rnd(1.5, 2.5) : 1.0; // occasional crackle spike
+      d[i] = (Math.random()*2-1) * env * burst;
     }
   }
-  const hs = ac.createBufferSource(); hs.buffer = hBuf;
-  const hbp = ac.createBiquadFilter(); hbp.type='bandpass'; hbp.frequency.value=3800; hbp.Q.value=0.6;
-  const hg = ac.createGain();
-  hg.gain.setValueAtTime(0.22, t + 0.02);
-  hg.gain.exponentialRampToValueAtTime(0.001, t + 0.095);
-  hs.connect(hbp); hbp.connect(hg); hg.connect(S.masterG);
-  hs.start(t + 0.02); hs.stop(t + 0.1);
+  const ms = ac.createBufferSource(); ms.buffer = mBuf;
+  // Bandpass that sweeps DOWN from 3500Hz to 1200Hz as plastic settles
+  const mbp = ac.createBiquadFilter(); mbp.type='bandpass';
+  mbp.frequency.setValueAtTime(3500, t + 0.01);
+  mbp.frequency.exponentialRampToValueAtTime(1200, t + 0.13);
+  mbp.Q.value = 1.2;
+  const meq = ac.createBiquadFilter(); meq.type='highshelf'; meq.frequency.value=4000; meq.gain.value=6;
+  const mg = ac.createGain();
+  mg.gain.setValueAtTime(0, t);
+  mg.gain.linearRampToValueAtTime(0.55, t + 0.015); // brief delay — crinkle comes after crack
+  mg.gain.setValueAtTime(0.55, t + 0.05);
+  mg.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+  ms.connect(mbp); mbp.connect(meq); meq.connect(mg); mg.connect(S.masterG);
+  ms.start(t); ms.stop(t + 0.15);
+
+  // ── Layer 4: SUB CLICK ──
+  // The tiny physical impact of the dome inverting — felt more than heard.
+  // A single-cycle low thump that adds "weight" to the pop.
+  const sLen = Math.ceil(sr * 0.008);
+  const sBuf = ac.createBuffer(2, sLen, sr);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = sBuf.getChannelData(ch);
+    for (let i = 0; i < sLen; i++) {
+      const env = Math.pow(1 - i/sLen, 4);
+      d[i] = Math.sin(2*Math.PI * 80 * i/sr) * env;
+    }
+  }
+  const ss = ac.createBufferSource(); ss.buffer = sBuf;
+  const sg = ac.createGain(); sg.gain.value = 0.8;
+  ss.connect(sg); sg.connect(S.masterG);
+  ss.start(t); ss.stop(t + 0.01);
 }
 
 function playPeel() {
   if (!S.ac || S.muted) return;
+  if (S.ac.state !== 'running') return;
   const ac = S.ac;
-  if (ac.state === 'suspended') ac.resume();
   const t = ac.currentTime, dur = 1.1;
 
   // Stereo peel noise — bandpass sweeps upward like plastic separating
@@ -909,8 +996,8 @@ function playPeel() {
 
 function playChime() {
   if (!S.ac || S.muted) return;
+  if (S.ac.state !== 'running') return;
   const ac = S.ac;
-  if (ac.state === 'suspended') ac.resume();
   const t = ac.currentTime;
   [523.25, 659.25, 783.99].forEach((f,i) => {
     const o=ac.createOscillator(), g=ac.createGain(), s=t+i*.22;
@@ -1603,12 +1690,24 @@ $bTog.addEventListener('click', () => { S.breathe=!S.breathe; $bTog.classList.to
 $hTog.addEventListener('click', () => { S.haptic=!S.haptic; $hTog.classList.toggle('on',S.haptic); });
 
 document.querySelectorAll('.sp').forEach(pill => {
-  pill.addEventListener('click', () => {
+  pill.addEventListener('click', async () => {
+    const type = pill.dataset.s;
+    const isOn = pill.classList.contains('on');
+
+    // Remove active state from all pills first
     document.querySelectorAll('.sp').forEach(p => p.classList.remove('on'));
-    pill.classList.add('on');
-    ensureAudio();
-    startAmb(pill.dataset.s);
-    S.ambG.gain.value = (S.popped/S.total)*.15;
+
+    if (isOn) {
+      // Was on — toggle OFF: stop soundscape, leave pop sounds working
+      stopAmb();
+      S.ambType = null;
+    } else {
+      // Was off — toggle ON: start this soundscape
+      pill.classList.add('on');
+      await ensureAudio();
+      startAmb(type);
+      if (S.ambG) S.ambG.gain.value = 0.12 + (S.popped / S.total) * 0.16;
+    }
   });
 });
 
