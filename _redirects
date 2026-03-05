@@ -1,0 +1,3 @@
+# Bubble Bloom — Netlify Redirects
+# Single-page app fallback: all paths → index.html (200, not 301)
+/*    /index.html    200
