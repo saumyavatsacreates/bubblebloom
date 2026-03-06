@@ -454,14 +454,21 @@ function buildGrid() {
       dome.style.filter = `hue-rotate(${((c*11+r*7)%32)-16}deg)`;
 
       cell.appendChild(dome);
-      // touchend = the moment finger lifts — iOS treats this as a trusted gesture
-      // e.preventDefault() here suppresses the synthetic click iOS would fire 300ms later
-      cell.addEventListener('touchend', e => {
-        e.preventDefault();
+      // touchstart: most trusted gesture event on iOS for Web Audio unlock.
+      // No preventDefault — we don't want to block the gesture chain.
+      // Timestamp guard prevents the synthetic click (fired ~300ms later) from double-popping.
+      cell.addEventListener('touchstart', e => {
+        cell._lastTouch = Date.now();
+        initAudio();
         pop(cell);
-      }, { passive: false });
-      // click covers desktop/mouse — ignored on touch because preventDefault above stops it
-      cell.addEventListener('click', () => pop(cell));
+      }, { passive: true });
+      // click: fires on desktop mouse, and on iOS if touchstart didn't fire.
+      // Guard: skip if a touchstart just fired within 500ms (prevents double-pop on iOS).
+      cell.addEventListener('click', () => {
+        if (Date.now() - (cell._lastTouch || 0) < 500) return;
+        initAudio();
+        pop(cell);
+      });
       cell.addEventListener('keydown', e => {
         if (e.key===' '||e.key==='Enter') { e.preventDefault(); pop(cell); }
       });
@@ -536,8 +543,11 @@ function allPopped() {
       $pc.classList.add('show');
       document.body.classList.add('peel-mode');
       S.peelReady = true;
-      $pl.addEventListener('touchend', e => { e.preventDefault(); doPeel(); }, { once:true, passive:false });
-      $pl.addEventListener('click', doPeel, { once:true });
+      $pl.addEventListener('touchstart', () => { initAudio(); doPeel(); }, { once:true, passive:true });
+      $pl.addEventListener('click', () => {
+        if (Date.now() - ($pl._lastTouch || 0) < 500) return;
+        doPeel();
+      }, { once:true });
       $pl.addEventListener('keydown', e => {
         if (e.key===' '||e.key==='Enter') doPeel();
       }, { once:true });
@@ -658,6 +668,15 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('pageshow', () => {
   if (S.ac && S.ac.state !== 'running') S.ac.resume();
 });
+
+// First-touch warmup: init AudioContext on the very first touch anywhere on the page.
+// This is the earliest possible moment — before the user even lifts their finger.
+// Belt-and-suspenders for iOS: even if a bubble's touchstart fires first,
+// calling initAudio() twice is safe (it's a no-op if already initialised).
+document.addEventListener('touchstart', function firstTouch() {
+  document.removeEventListener('touchstart', firstTouch);
+  initAudio();
+}, { passive: true });
 window.addEventListener('focus', () => {
   if (S.ac && S.ac.state !== 'running') S.ac.resume();
 });
@@ -1644,6 +1663,7 @@ let used = [];
 function newPuzzle() {
   $comp.classList.remove('show');
   S.active = false;
+  $bw.style.pointerEvents = ''; // restore after allPopped() disables it
   $loading.classList.remove('fade'); $loading.style.display = 'flex';
   $pl.style.display = ''; $pl.className = '';
 
