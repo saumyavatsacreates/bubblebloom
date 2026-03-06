@@ -74,12 +74,12 @@ html,body{width:100%;height:100%;background:var(--cream);font-family:'DM Mono',m
 /* CRITICAL: solid background on every cell.
    This covers the seam/gap between domes so art NEVER bleeds through.
    Colour matches cover canvas exactly. Cleared to transparent when bubble pops. */
-.bcell{position:relative;flex-shrink:0;flex-grow:0;background:#d4e8f5;outline:none}
+.bcell{position:relative;flex-shrink:0;flex-grow:0;background:#d4e8f5;outline:none;touch-action:manipulation;-webkit-touch-callout:none}
 .bcell.popped{background:transparent}
 
 /* ── Dome — realistic clear plastic hemisphere ── */
 .bdome{
-  position:absolute;border-radius:50%;cursor:pointer;will-change:transform,opacity;
+  position:absolute;border-radius:50%;cursor:pointer;will-change:transform,opacity;touch-action:manipulation;
   /* Layered gradients simulate translucent plastic dome:
      1. Large crisp specular gloss (top-left light source)
      2. Tiny secondary glint (bottom-right reflection)
@@ -168,7 +168,7 @@ html,body{width:100%;height:100%;background:var(--cream);font-family:'DM Mono',m
   transition:border-width .5s cubic-bezier(.34,1.56,.64,1) .2s;
   filter:drop-shadow(2px 2px 3px rgba(0,0,0,.22))
 }
-#peel-layer.ready{pointer-events:all;opacity:1;cursor:pointer}
+#peel-layer.ready{pointer-events:all;opacity:1;cursor:pointer;touch-action:manipulation;-webkit-touch-callout:none}
 #peel-layer.ready::after{border-top:60px solid rgba(255,255,255,.72);border-right:60px solid transparent}
 /* Peel animation */
 @keyframes peelOff{
@@ -454,7 +454,14 @@ function buildGrid() {
       dome.style.filter = `hue-rotate(${((c*11+r*7)%32)-16}deg)`;
 
       cell.appendChild(dome);
-      cell.addEventListener('pointerdown', e => { e.preventDefault(); pop(cell); });
+      // touchend = the moment finger lifts — iOS treats this as a trusted gesture
+      // e.preventDefault() here suppresses the synthetic click iOS would fire 300ms later
+      cell.addEventListener('touchend', e => {
+        e.preventDefault();
+        pop(cell);
+      }, { passive: false });
+      // click covers desktop/mouse — ignored on touch because preventDefault above stops it
+      cell.addEventListener('click', () => pop(cell));
       cell.addEventListener('keydown', e => {
         if (e.key===' '||e.key==='Enter') { e.preventDefault(); pop(cell); }
       });
@@ -467,15 +474,13 @@ function buildGrid() {
 // ════════════════════════════════════════════════════════════
 //  POP
 // ════════════════════════════════════════════════════════════
-async function pop(cell) {
+function pop(cell) {
   if (!S.active || cell.classList.contains('popped')) return;
   const dome = cell.querySelector('.bdome');
   if (!dome || dome.classList.contains('popping')) return;
 
-  await ensureAudio();
-  if (!S.ambG.gain.value && S.popped === 0) {
-    startAmb(S.ambType); // start soundscape on first pop if not already running
-  }
+  // initAudio is synchronous — safe to call directly in gesture handler
+  initAudio();
   playPop(0.78 + Math.random() * .44);
   if (S.haptic && navigator.vibrate) navigator.vibrate(8);
 
@@ -531,7 +536,8 @@ function allPopped() {
       $pc.classList.add('show');
       document.body.classList.add('peel-mode');
       S.peelReady = true;
-      $pl.addEventListener('pointerdown', doPeel, { once:true });
+      $pl.addEventListener('touchend', e => { e.preventDefault(); doPeel(); }, { once:true, passive:false });
+      $pl.addEventListener('click', doPeel, { once:true });
       $pl.addEventListener('keydown', e => {
         if (e.key===' '||e.key==='Enter') doPeel();
       }, { once:true });
@@ -542,10 +548,10 @@ function allPopped() {
 // ════════════════════════════════════════════════════════════
 //  PEEL
 // ════════════════════════════════════════════════════════════
-async function doPeel() {
+function doPeel() {
   if (S.peeled) return;
   S.peeled = true;
-  await ensureAudio();
+  initAudio();
   $pc.classList.remove('show');
   playPeel();
   if (S.haptic && navigator.vibrate) navigator.vibrate([18,10,14,7,11,5,9,4,7,3]);
@@ -591,71 +597,69 @@ function showBreathe() {
 // ════════════════════════════════════════════════════════════
 const rnd = (a,b) => a + Math.random()*(b-a);
 
-async function ensureAudio() {
-  if (!S.ac) {
-    const ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
-    S.ac = ac;
+// ─────────────────────────────────────────────────────────────
+//  AUDIO — iOS-safe, fully synchronous in gesture handlers
+//  Rule: NEVER await inside a touch/click handler on iOS.
+//  The AudioContext must be created AND a sound played in the
+//  same synchronous call stack as the user gesture.
+// ─────────────────────────────────────────────────────────────
 
-    S.masterG = ac.createGain();
-    S.masterG.gain.value = S.muted ? 0 : 1;
-    S.masterG.connect(ac.destination);
-
-    S.ambG = ac.createGain();
-    S.ambG.gain.value = 0;
-    S.ambG.connect(S.masterG);
+function initAudio() {
+  // Already initialised
+  if (S.ac) {
+    // Just resume if suspended — don't await, fire and forget
+    if (S.ac.state !== 'running') S.ac.resume();
+    return;
   }
 
-  const ac = S.ac;
+  // Create context synchronously inside gesture
+  const ac = new (window.AudioContext || window.webkitAudioContext)();
+  S.ac = ac;
 
-  if (ac.state !== 'running') {
-    try { await ac.resume(); } catch(e) {}
-  }
+  // Master gain
+  S.masterG = ac.createGain();
+  S.masterG.gain.value = S.muted ? 0 : 1;
+  S.masterG.connect(ac.destination);
 
-  if (!S.iosUnlocked && ac.state === 'running') {
-    S.iosUnlocked = true;
+  // Ambient gain (soundscapes route through here)
+  S.ambG = ac.createGain();
+  S.ambG.gain.value = 0;
+  S.ambG.connect(S.masterG);
 
-    // iOS requires a real buffer played synchronously after resume to unlock
-    const buf = ac.createBuffer(1, ac.sampleRate * 0.1, ac.sampleRate);
-    // Fill with very quiet noise — iOS ignores truly silent buffers
-    const d = buf.getChannelData(0);
-    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * 0.0001;
-    const src = ac.createBufferSource();
-    src.buffer = buf;
-    src.connect(ac.destination);
-    src.start(0);
+  // iOS unlock: play audible-but-tiny noise buffer synchronously NOW.
+  // Must happen in same call stack as the gesture, before any await.
+  const unlock = ac.createBuffer(1, ac.sampleRate * 0.05, ac.sampleRate);
+  const ud = unlock.getChannelData(0);
+  for (let i = 0; i < ud.length; i++) ud[i] = (Math.random() * 2 - 1) * 0.001;
+  const us = ac.createBufferSource();
+  us.buffer = unlock;
+  us.connect(ac.destination);
+  us.start(0);
 
-    // Keep-alive: a silent oscillator running continuously.
-    // iOS Safari suspends AudioContext when it detects "silence" for >30s.
-    // This prevents that — it's inaudible (gain 0.00001) but keeps the graph active.
-    const keepAlive = ac.createOscillator();
-    const keepG = ac.createGain();
-    keepG.gain.value = 0.00001;
-    keepAlive.connect(keepG);
-    keepG.connect(ac.destination);
-    keepAlive.start();
-    S._keepAlive = keepAlive; // store reference
-  }
+  // Keep-alive oscillator: iOS suspends a "silent" AudioContext after ~30s.
+  // An inaudible oscillator prevents suspension without user noticing.
+  const ka = ac.createOscillator();
+  const kg = ac.createGain();
+  kg.gain.value = 0.00001; // -100dB — completely inaudible
+  ka.connect(kg);
+  kg.connect(ac.destination);
+  ka.start();
+
+  // Resume if iOS created it suspended (rare but happens)
+  if (ac.state === 'suspended') ac.resume();
+
+  S.iosUnlocked = true;
 }
 
-// Re-unlock on visibility change and focus (iOS suspends on background)
-document.addEventListener('visibilitychange', async () => {
-  if (!S.ac) return;
-  if (S.ac.state !== 'running') {
-    try { await S.ac.resume(); } catch(e) {}
-  }
+// Re-resume on returning from background — don't await
+document.addEventListener('visibilitychange', () => {
+  if (S.ac && S.ac.state !== 'running') S.ac.resume();
 });
-window.addEventListener('focus', async () => {
-  if (!S.ac) return;
-  if (S.ac.state !== 'running') {
-    try { await S.ac.resume(); } catch(e) {}
-  }
+window.addEventListener('pageshow', () => {
+  if (S.ac && S.ac.state !== 'running') S.ac.resume();
 });
-// pageshow fires on back-navigation cache restore (bfcache) — critical for iOS
-window.addEventListener('pageshow', async (e) => {
-  if (!S.ac) return;
-  if (S.ac.state !== 'running') {
-    try { await S.ac.resume(); } catch(e) {}
-  }
+window.addEventListener('focus', () => {
+  if (S.ac && S.ac.state !== 'running') S.ac.resume();
 });
 
 function stopAmb() {
@@ -1690,21 +1694,20 @@ $bTog.addEventListener('click', () => { S.breathe=!S.breathe; $bTog.classList.to
 $hTog.addEventListener('click', () => { S.haptic=!S.haptic; $hTog.classList.toggle('on',S.haptic); });
 
 document.querySelectorAll('.sp').forEach(pill => {
-  pill.addEventListener('click', async () => {
+  pill.addEventListener('click', () => {
     const type = pill.dataset.s;
     const isOn = pill.classList.contains('on');
 
-    // Remove active state from all pills first
     document.querySelectorAll('.sp').forEach(p => p.classList.remove('on'));
 
     if (isOn) {
-      // Was on — toggle OFF: stop soundscape, leave pop sounds working
+      // Toggle OFF — stop soundscape, pop sounds unaffected
       stopAmb();
       S.ambType = null;
     } else {
-      // Was off — toggle ON: start this soundscape
+      // Toggle ON — initAudio is synchronous, safe in click handler
       pill.classList.add('on');
-      await ensureAudio();
+      initAudio();
       startAmb(type);
       if (S.ambG) S.ambG.gain.value = 0.12 + (S.popped / S.total) * 0.16;
     }
